@@ -12,7 +12,9 @@ import sys
 import textwrap
 
 
-MIGRATION_PATERN = re.compile(r"^[^.].*\.sql$")
+SQL_EXT = "sql"
+
+MIGRATION_PATERN = re.compile(r"^[^.].*\." f"{SQL_EXT}" "$")
 COMMENTS = re.compile(r"^\s*--\s*(.*?)\s*$")
 MIGRATE_KEY = re.compile(r"migrate:\s*([^\s]*)")
 SQL_IS_COMPLETE = re.compile(r".*;\s*(--.*)?$")
@@ -102,7 +104,7 @@ def read_migration(path, directory="."):
 def migration_name(name, step=0, date=None):
     if date is None:
         date = datetime.today().strftime('%Y%m%d')
-    return f"{date}{step}-{name}.sql"
+    return f"{date}{step}-{name}.{SQL_EXT}"
 
 
 def hash_migration(migration):
