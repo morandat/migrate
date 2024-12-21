@@ -112,6 +112,7 @@ def hash_migration(migration):
     m.update("\n".join(migration.get("prolog", [])).encode("utf8"))
     m.update("\n".join(migration.get("up", [])).encode("utf8"))
     m.update("\n".join(migration.get("down", [])).encode("utf8"))
+    m.update("\n".join(migration.get("epilog", [])).encode("utf8"))
     return m.hexdigest()
 
 
@@ -141,7 +142,8 @@ def execute_migration(cnx, name, migration, kind=Kind.UP, table="migrate"):
     with cnx.cursor() as cursor:
         try:
             for query in itertools.chain(migration.get("prolog", []),
-                                         migration.get(kind.value, [])):
+                                         migration.get(kind.value, []),
+                                         migration.get("epilog", [])):
                 real_query = MAY_FAIL.sub("", query, count=1)
                 may_fail = real_query != query
                 logger.debug("Execute: %s %s", may_fail, real_query)
