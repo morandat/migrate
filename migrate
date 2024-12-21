@@ -376,7 +376,7 @@ if __name__ == "__main__":
     parser.add_argument('--charset', '-c', help='utf8mb4')
     parser.add_argument('--directory', "-D", default=os.environ.get("MIGRATE_DIR", '.'),
                         help="migrations directory ($MIGRATE_DIR)")
-    parser.add_argument('--dry-run', default=False, action=argparse.BooleanOptionalAction,
+    parser.add_argument('--dry-run', '-n', default=False, action=argparse.BooleanOptionalAction,
                         help='Show what would be done')
     subparsers = parser.add_subparsers(dest="command", required=True, help='subcommand help')
 
@@ -386,7 +386,7 @@ if __name__ == "__main__":
     parser_rollback = subparsers.add_parser('rollback', aliases=["down"], help='Rollback database')
     parser_rollback.add_argument('migrations', nargs='+')
 
-    parser_status = subparsers.add_parser('status', help='listed migration status')
+    parser_status = subparsers.add_parser('status', aliases=["st"], help='listed migration status')
     parser_status.add_argument('--show-missings', default=False, action=argparse.BooleanOptionalAction,
                                help='Only show missings migrations')
     parser_status.add_argument("migrations", nargs='*')
@@ -394,6 +394,8 @@ if __name__ == "__main__":
     parser_create = subparsers.add_parser('create', help='Create new migration file')
     parser_create.add_argument('--step', type=int, default=0, help='if steping is needed')
     parser_create.add_argument('--date', help='force prefix date')
+    parser_create.add_argument('--overwrite', '-f', default=False, action=argparse.BooleanOptionalAction,
+                               help='overwrite existing files')
     parser_create.add_argument("name", nargs='*')
 
     parser_dump = subparsers.add_parser('dump', help='Dump schema')
@@ -474,7 +476,7 @@ if __name__ == "__main__":
         with connect(args) as cnx:
             dump_schema(cnx, args.database, file=args.file, create_database=args.create_database)
 
-    elif args.command == "status":
+    elif args.command in ["status", "st"]:
         with connect(args) as cnx:
             status_migrations(cnx, args.directory, filters=args.migrations,
                               show_missings=args.show_missings, table=args.table)
@@ -485,14 +487,14 @@ if __name__ == "__main__":
                               date=args.date)
         print(name)
         if args.name:
-            with open(os.path.join(args.directory, name), "x") as file:
+            with open(os.path.join(args.directory, name), "w" if args.overwrite else "x") as file:
                 migration = f'''
                 -- migrate: up
                 -- migrate: down
                 '''
                 print(textwrap.dedent(migration).strip(), file=file)
 
-    elif args.command == "execute":
+    elif args.command in ["execute", "exec"]:
         with connect(args) as cnx:
             for file in args.files:
                 migration = read_migration(file, "")
