@@ -440,7 +440,7 @@ if __name__ == "__main__":
             verbosity = 2
         logging.basicConfig(level=levels[verbosity], format='%(levelname)s: %(message)s')
 
-    def connect(args, ignore_dry_run=False):
+    def connect(args, ignore_dry_run=False, create_database=False):
         if args.dry_run and not ignore_dry_run:
             return FakeConnection()
         if args.empty_password:
@@ -452,11 +452,15 @@ if __name__ == "__main__":
 
         logger.debug("Connecting to %s@%s db: %s (%s)",
                      args.user, args.host, args.database, args.charset)
-        return pymysql.connect(host=args.host,
-                               user=args.user,
-                               password=password,
-                               database=args.database,
-                               charset=args.charset)
+        cnx = pymysql.connect(host=args.host,
+                              user=args.user,
+                              password=password,
+                              charset=args.charset)
+        if create_database:
+            with cnx.cursor() as cursor:
+                cursor.execute(f'CREATE DATABASE IF NOT EXISTS `{args.database}`')
+        cnx.select_db(args.database)
+        return cnx
 
     parser = argparse.ArgumentParser(prog='migrate',
                                      description='Simple quick and dirty tool to migrate database')
@@ -481,6 +485,8 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(dest="command", required=True, help='subcommand help')
 
     parser_up = subparsers.add_parser('up', aliases=["upgrade", "apply"], help='upgrade database')
+    parser_up.add_argument('--create-database', default=False, action=argparse.BooleanOptionalAction,
+                           help='create database before any pending migrations')
     parser_up.add_argument('migrations', nargs='*')
 
     parser_rollback = subparsers.add_parser('rollback', aliases=["down"], help='Rollback database')
@@ -543,7 +549,7 @@ if __name__ == "__main__":
     set_logger_level(logger, args.verbose)
 
     if args.command in ["up", "upgrade", "apply"]:
-        with connect(args, ignore_dry_run=True) as cnx:
+        with connect(args, ignore_dry_run=True, create_database=args.create_database) as cnx:
             migrations = pending_migrations(cnx, args.directory,
                                             filters=args.migrations, table=args.table)
             if not args.dry_run:
