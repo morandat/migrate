@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+"""
+Migrate, a Quick and dirty database migration tool
+"""
 
 from contextlib import nullcontext, suppress
-import datetime
+from datetime import datetime
 import decimal
 import enum
 from getpass import getpass
@@ -9,11 +12,11 @@ import hashlib
 import itertools
 import logging
 import os
-import pymysql
 import re
 import sys
 import textwrap
 
+__version__ = "0.1"
 
 SQL_EXT = "sql"
 
@@ -140,13 +143,16 @@ def is_pending(cnx, name, migration, table="migrate"):
     return False
 
 
-def execute_migration(cnx, name, migration, kind=Kind.UP, table="migrate"):
+def execute_migration(cnx, name, migration, kind=Kind.UP, table="migrate", template={}):
     logger.info("Applying migration %s: %s", kind.value, name)
     with cnx.cursor() as cursor:
         try:
-            for query in itertools.chain(migration.get("prolog", []),
+            for query in itertools.chain(template.get("prolog", []),
+                                         migration.get("prolog", []),
+                                         template.get(kind.value, []),
                                          migration.get(kind.value, []),
-                                         migration.get("epilog", [])):
+                                         migration.get("epilog", []),
+                                         template.get("epilog", [])):
                 real_query = MAY_FAIL.sub("", query, count=1)
                 may_fail = real_query != query
                 logger.debug("Execute: %s %s", may_fail, real_query)
@@ -246,7 +252,7 @@ def _parse_migrations_rev(filters):
     return None, None, filters, None
 
 
-def apply_migrations(cnx, migrations, kind=Kind.UP, one_transaction=False, table="migrate"):
+def apply_migrations(cnx, migrations, kind=Kind.UP, one_transaction=False, table="migrate", template={}):
     with cnx.cursor() as cursor:
         if one_transaction:
             cnx.begin()  # a big transaction or many small
@@ -309,18 +315,18 @@ def dump_values(cnx, table, file=sys.stdout, may_fail=False, create_database=Tru
             print(';', file=file)
 
 
-def filter_tables(tables, existings):
+def filter_selection(selection, existings):
     res, present = list(), set()
-    star_present = not bool(tables)
-    for table in tables:
-        if table == "*":
+    star_present = not bool(selection)
+    for item in selection or []:
+        if item == "*":
             star_present = True
-        elif table.startswith("-"):
-            present.add(table[1:])
+        elif item.startswith("-"):
+            present.add(item[1:])
             star_present = True
-        elif table in existings:
-            res.append(table)
-            present.add(table)
+        elif item in existings:
+            res.append(item)
+            present.add(item)
 
     if star_present:
         for e in existings:
@@ -330,8 +336,8 @@ def filter_tables(tables, existings):
 
 
 def dump(cnx, database, *tables, file=sys.stdout, may_fail=False,
-         split=None, fmt="{n:04}-{t}.sql", counter=1, overwrite=False,
-         create_database=True, create_table=True, insert=False):
+         directory=None, fmt="{n:04}-{t}.sql", counter=1, overwrite=False,
+         create_database=True, create_table=True, insert=False, add_down=False):
 
     def _open(file, cancel=False):
         if cancel:
@@ -341,27 +347,37 @@ def dump(cnx, database, *tables, file=sys.stdout, may_fail=False,
             return open(file, "w" if overwrite else "x")
         return nullcontext(file)
 
-    if split:
+    if directory:
         with suppress(IOError):
-            os.mkdir(split)
+            os.mkdir(directory)
         if isinstance(file, str):
-            file = os.path.join(split, file)
-    with _open(file, cancel=split and not create_database) as file:
+            file = os.path.join(directory, file)
+    with _open(file, cancel=directory and not create_database) as file:
         # Database can be retrieved with select database() ;
         # however it can't be used in conjunction of `show`
         if create_database:
             dump_database(cnx, database, file=file, may_fail=may_fail)
+            if add_down:
+                print("-- migrate: down", file=file)
+                print(f"@DROP DATABASE `{database};`", file=fd)
 
         with cnx.cursor() as cursor:
             res = cursor.execute("SHOW TABLES")
-            for table in filter_tables(tables, [r[0] for r in cursor.fetchall()]):
-                if split:
-                    file = os.path.join(split, fmt.format(n=counter, t=table))
+            for table in filter_selection(tables, [r[0] for r in cursor.fetchall()]):
+                if directory:
+                    file = os.path.join(directory, fmt.format(n=counter, t=table))
                 with _open(file) as fd:
                     if create_table:
                         dump_table(cnx, table, file=fd, may_fail=may_fail)
                     if insert:
                         dump_values(cnx, table, file=fd, may_fail=may_fail)
+                    if add_down:
+                        print("-- migrate: down", file=fd)
+                        if create_table:
+                            print(f"@DROP TABLE `{table}`;", file=fd)
+                        elif insert:
+                            print("-- You should probably add a WHERE clause on the next line ", file=fd)
+                            print("@DELETE FROM `table`;", file=fd)
                 counter += 1
 
 
@@ -389,7 +405,45 @@ def escape(value):
     raise Exception("type %s not supported" % type(value))
 
 
+def set_logger_level(logger, verbosity):
+    levels = [logging.WARNING, logging.INFO, logging.DEBUG]
+    if verbosity > 2:
+        verbosity = 2
+    logging.basicConfig(level=levels[verbosity], format='%(levelname)s: %(message)s')
+
+
+def connect(args, create_database=False):
+    if args.empty_password or args.driver == "fake":
+        password = None
+    elif args.password is None:
+        password = getpass(f"{args.user}@{args.host}: ")
+    else:
+        password = args.password
+
+    if not args.database and args.driver != "fake":
+        raise RuntimeError(args.database, "database is required %s" % args)
+    logger.debug("Connecting to %s@%s db: %s (%s)",
+                 args.user, args.host, args.database, args.charset)
+    connect = DRIVERS.get(args.driver, mysql_driver)
+    cnx = connect(host=args.host,
+                  user=args.user,
+                  password=password,
+                  charset=args.charset)
+    if create_database:
+        with cnx.cursor() as cursor:
+            cursor.execute(f'CREATE DATABASE IF NOT EXISTS `{args.database}`')
+    cnx.select_db(args.database)
+    return cnx
+
+
+def mysql_driver(args):
+    import pymysql
+    return pymysql.connect
+
+
 class FakeConnection():
+    def __init__(*args, **kwargs):
+        pass
 
     class Cursor():
         def __enter__(self, *args):
@@ -404,7 +458,7 @@ class FakeConnection():
         def fetchall(self):
             return []
 
-        def execute(self, query, args):
+        def execute(self, query, *args):
             logger.critical("Execute: %s", query.format(args))
             return False
 
@@ -423,6 +477,9 @@ class FakeConnection():
     def commit(self):
         logger.debug("COMMIT")
 
+    def select_db(self, *args):
+        logger.debug("SELECT_DB %s", *args)
+
     def rollback(self):
         logger.debug("ROLLBACK")
 
@@ -430,50 +487,28 @@ class FakeConnection():
         return self.Cursor()
 
 
-if __name__ == "__main__":
+DRIVERS = dict(mysql=mysql_driver, fake=FakeConnection)
+
+
+def main():
     import argparse
-    from datetime import datetime
-
-    def set_logger_level(logger, verbosity):
-        levels = [logging.WARNING, logging.INFO, logging.DEBUG]
-        if verbosity > 2:
-            verbosity = 2
-        logging.basicConfig(level=levels[verbosity], format='%(levelname)s: %(message)s')
-
-    def connect(args, ignore_dry_run=False, create_database=False):
-        if args.dry_run and not ignore_dry_run:
-            return FakeConnection()
-        if args.empty_password:
-            password = None
-        elif args.password is None:
-            password = getpass(f"{args.user}@{args.host}: ")
-        else:
-            password = args.password
-
-        logger.debug("Connecting to %s@%s db: %s (%s)",
-                     args.user, args.host, args.database, args.charset)
-        cnx = pymysql.connect(host=args.host,
-                              user=args.user,
-                              password=password,
-                              charset=args.charset)
-        if create_database:
-            with cnx.cursor() as cursor:
-                cursor.execute(f'CREATE DATABASE IF NOT EXISTS `{args.database}`')
-        cnx.select_db(args.database)
-        return cnx
 
     parser = argparse.ArgumentParser(prog='migrate',
                                      description='Simple quick and dirty tool to migrate database')
     parser.add_argument('--verbose', '-v', action='count', default=0)
+    parser.add_argument('--driver', default=os.environ.get("MIGRATE_DRIVER", "mysql"), choices = DRIVERS.keys(),
+                        help='database connector ($MIGRATE_DRIVER)')
     parser.add_argument('--host', '-H', default=os.environ.get("MYSQL_HOST", "database"),
                         help='database host ($MYSQL_HOST)')
-    parser.add_argument('--database', '-d', default=os.environ.get("MYSQL_DATABASE", "volbrain"),
+    parser.add_argument('--database', '-d', default=os.environ.get("MYSQL_DATABASE"),
                         help='database name ($MYSQL_DATABASE)')
     parser.add_argument('--table', '-t', default=os.environ.get("MIGRATE_TABLE", "migrate"),
                         help='table name')
+    parser.add_argument('--template', help='template migration')
     parser.add_argument('--user', '-u', default=os.environ.get("MYSQL_USER", "root"),
                         help='database user name (MYSQL_USER)')
     parser.add_argument('--password', '-p', default=os.environ.get("MYSQL_PASSWORD", None),
+                        # FIXME this show the password in env when help is showned
                         help='database user password ($MYSQL_PASSWORD)')
     parser.add_argument('--empty-password',
                         help='if database user has no password')
@@ -508,8 +543,10 @@ if __name__ == "__main__":
     parser_dump.add_argument('--file', '-o', default=sys.stdout, help='Output to file')
     parser_dump.add_argument('--overwrite', '-f', default=False, action=argparse.BooleanOptionalAction,
                              help='overwrite existing files')
-    parser_dump.add_argument('--split', default=None,
+    parser_dump.add_argument('--split', default=False, action=argparse.BooleanOptionalAction,
                              help='Split each table in a directory')
+    parser_dump.add_argument('--add-down', default=False, action=argparse.BooleanOptionalAction,
+                             help='Adds a migration down (may not work without split)')
     parser_dump.add_argument('--fmt', default="{n:04}-{t}.sql",
                              help='Use format string for filenames. see help("FORMATTING")')
     parser_dump.add_argument('--counter', '-c', type=int, default=1,
@@ -549,20 +586,22 @@ if __name__ == "__main__":
     set_logger_level(logger, args.verbose)
 
     if args.command in ["up", "upgrade", "apply"]:
-        with connect(args, ignore_dry_run=True, create_database=args.create_database) as cnx:
+        with connect(args, create_database=args.create_database) as cnx:
             migrations = pending_migrations(cnx, args.directory,
                                             filters=args.migrations, table=args.table)
             if not args.dry_run:
-                apply_migrations(cnx, migrations, kind=Kind.UP, table=args.table)
+                template = read_migration(args.template) if args.template else {}
+                apply_migrations(cnx, migrations, kind=Kind.UP, table=args.table, template=template)
             else:
                 print(*[name for name, migration in migrations], sep="\n")
 
     elif args.command in ["rollback", "down"]:
-        with connect(args, ignore_dry_run=True) as cnx:
+        with connect(args) as cnx:
             migrations = load_migrations(list_migrations(cnx, table=args.table),
                                          args.directory, filters=args.migrations)
             if not args.dry_run:
-                apply_migrations(cnx, migrations, kind=Kind.DOWN, table=args.table)
+                template = read_migration(args.template) if args.template else {}
+                apply_migrations(cnx, migrations, kind=Kind.DOWN, table=args.table, template=template)
             else:
                 print(*[name for name, migration in migrations], sep="\n")
 
@@ -576,7 +615,9 @@ if __name__ == "__main__":
 
     elif args.command == "record":
         kind = Kind.DOWN if args.unset else Kind.UP
-        with connect(args, ignore_dry_run=True) as cnx:
+        if args.dry_run:
+            args.driver = "fake"
+        with connect(args) as cnx:
             cnx.autocommit(True)
             if args.update:
                 migrations = pending_migrations(cnx, args.directory, filters=args.migrations)
@@ -598,8 +639,9 @@ if __name__ == "__main__":
             try:
                 dump(cnx, args.database, *args.table,
                      file=args.file, may_fail=args.may_fail, overwrite=args.overwrite,
-                     split=args.split, fmt=args.fmt, counter=args.counter,
-                     create_database=args.create_database, create_table=args.create_table, insert=args.insert)
+                     directory=(args.directory if args.split else None), fmt=args.fmt, counter=args.counter,
+                     create_database=args.create_database, create_table=args.create_table, insert=args.insert,
+                     add_down=args.add_down)
             except IOError as e:
                 logger.critical(str(e))
 
@@ -622,20 +664,26 @@ if __name__ == "__main__":
                 print(textwrap.dedent(migration).strip(), file=file)
 
     elif args.command in ["execute", "exec"]:
+        if args.dry_run:
+            args.driver = "fake"
         with connect(args) as cnx:
             for file in args.files:
                 migration = read_migration(file, "")
+                template = read_migration(args.template) if args.template else {}
                 cnx.begin()
                 with cnx.cursor() as cursor:
                     try:
-                        for section in args.section or migration.keys():
-                            for query in migration.get(section, []):
+                        for section in filter_selection(args.section,
+                                                        set(itertools.chain(migration.keys(), template.keys()))):
+                            for query in itertools.chain(template.get(section, []),
+                                                         migration.get(section, [])):
                                 logger.debug("Execute: %s", query)
                                 res = cursor.execute(query)
                                 logger.debug("Result: %s", res)
                         cnx.commit()
                     except Exception as e:
                         logger.error("Execution %s failed: %s", file, e)
+                        logger.exception(e)
                         cnx.rollback()
 
     elif args.command == "install":
@@ -660,3 +708,8 @@ if __name__ == "__main__":
                   file=file)
     else:
         logger.critical(f"Not yet implemented: {args.command}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

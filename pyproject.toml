@@ -1,0 +1,20 @@
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "migrate"
+authors = [
+  { name="Floréal Morandat", email="florealm@gmail.com" },
+]
+readme = "README.md"
+dynamic = ["version", "description"]
+dependencies = [
+  "pymysql"
+]
+
+[project.urls]
+Homepage = "https://github.com/morandat/migrate"
+
+[project.scripts]
+migrate = "migrate:main"
