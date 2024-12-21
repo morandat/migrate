@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+from contextlib import nullcontext, suppress
+import datetime
+import decimal
 import enum
 from getpass import getpass
 import hashlib
@@ -271,26 +274,119 @@ def apply_migrations(cnx, migrations, kind=Kind.UP, one_transaction=False, table
             cnx.commit()
 
 
-def dump_schema(cnx, database, file=sys.stdout, create_database=True):
-    # Database can be retrieved with select database() ; however it can't be used in conjunction of `show`
+def dump_database(cnx, database, file=sys.stdout, may_fail=False):
     with cnx.cursor() as cursor:
-        if create_database:
-            res = cursor.execute(f"SHOW CREATE DATABASE `{database}`")  # Need fString, %s quotes too much
-            if res:
-                db = cursor.fetchone()
-                print("-- Database: %s" % (db[0]), file=file)
-                print(file=file)
-                print(db[1], file=file)
+        res = cursor.execute(f"SHOW CREATE DATABASE `{database}`")  # Need fString, %s quotes too much
+        if res:
+            logger.info("Create schema database: %s", database)
+            db = cursor.fetchone()
+            print("-- Database: %s" % (db[0]), file=file)
+            print("@" if may_fail else "", db[1], ';', file=file, sep="")
 
-        res = cursor.execute("SHOW TABLES")
-        for table in cursor.fetchall():  # Since we use fetchall we can reuse cursor
-            res = cursor.execute(f"SHOW CREATE TABLE `{table[0]}`")
-            if res:
-                structure = cursor.fetchone()
-                print("-- Table: %s" % (structure[0]), file=file)
-                print(file=file)
-                print(structure[1], file=file)
-                print(file=file)
+
+def dump_table(cnx, table, file=sys.stdout, may_fail=False):
+    with cnx.cursor() as cursor:
+        res = cursor.execute(f"SHOW CREATE TABLE `{table}`")
+        if res:
+            logger.info("Create schema of table: %s", table)
+            name, content = cursor.fetchone()
+            print("-- Table: %s" % name, file=file)
+            print("@" if may_fail else "", content, ';', file=file, sep="")
+
+
+def dump_values(cnx, table, file=sys.stdout, may_fail=False, create_database=True):
+    with cnx.cursor() as cursor:
+        res = cursor.execute(f"SELECT * FROM `{table}`")
+        if res:
+            counter = cursor.rowcount
+            logger.info("Insert into %s %s value%s", table, counter, "s" if counter > 1 else "")
+            print(("@" if may_fail else ""), f"INSERT INTO `{table}` VALUES", file=file, sep="")
+            while entry := cursor.fetchone():
+                counter -= 1
+                print("(", ", ".join(escape(f) for f in entry), ")",
+                      ("," if counter else ""),
+                      file=file, sep="")
+            print(';', file=file)
+
+
+def filter_tables(tables, existings):
+    res, present = list(), set()
+    star_present = not bool(tables)
+    for table in tables:
+        if table == "*":
+            star_present = True
+        elif table.startswith("-"):
+            present.add(table[1:])
+            star_present = True
+        elif table in existings:
+            res.append(table)
+            present.add(table)
+
+    if star_present:
+        for e in existings:
+            if e not in present:
+                res.append(e)
+    return res
+
+
+def dump(cnx, database, *tables, file=sys.stdout, may_fail=False,
+         split=None, fmt="{n:04}-{t}.sql", counter=1, overwrite=False,
+         create_database=True, create_table=True, insert=False):
+
+    def _open(file, cancel=False):
+        if cancel:
+            return nullcontext(file)
+        elif isinstance(file, str):
+            logger.debug("Creating: %s", file)
+            return open(file, "w" if overwrite else "x")
+        return nullcontext(file)
+
+    if split:
+        with suppress(IOError):
+            os.mkdir(split)
+        if isinstance(file, str):
+            file = os.path.join(split, file)
+    with _open(file, cancel=split and not create_database) as file:
+        # Database can be retrieved with select database() ;
+        # however it can't be used in conjunction of `show`
+        if create_database:
+            dump_database(cnx, database, file=file, may_fail=may_fail)
+
+        with cnx.cursor() as cursor:
+            res = cursor.execute("SHOW TABLES")
+            for table in filter_tables(tables, [r[0] for r in cursor.fetchall()]):
+                if split:
+                    file = os.path.join(split, fmt.format(n=counter, t=table))
+                with _open(file) as fd:
+                    if create_table:
+                        dump_table(cnx, table, file=fd, may_fail=may_fail)
+                    if insert:
+                        dump_values(cnx, table, file=fd, may_fail=may_fail)
+                counter += 1
+
+
+_escape_table = [chr(x) for x in range(128)]
+_escape_table[0] = "\\0"
+_escape_table[ord("\\")] = "\\\\"
+_escape_table[ord("\n")] = "\\n"
+_escape_table[ord("\r")] = "\\r"
+_escape_table[ord("\032")] = "\\Z"
+_escape_table[ord('"')] = '\\"'
+_escape_table[ord("'")] = "\\'"
+
+
+def escape(value):
+    if value is None:
+        return 'NULL'
+    if isinstance(value, str):
+        return f"'{value.translate(_escape_table)}'"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.strftime("'%Y-%m-%d %H:%M:%S'")
+    if isinstance(value, decimal.Decimal):
+        return str(value)
+    raise Exception("type %s not supported" % type(value))
 
 
 class FakeConnection():
@@ -402,12 +498,27 @@ if __name__ == "__main__":
                                help='overwrite existing files')
     parser_create.add_argument("name", nargs='*')
 
-    parser_dump = subparsers.add_parser('dump', help='Dump schema')
-    parser_dump.add_argument('--file', default=sys.stdout, help='Output to file')
-    parser_dump.add_argument('--create-database', default=True, action=argparse.BooleanOptionalAction,
-                             help='Output to file')
+    parser_dump = subparsers.add_parser('dump', help='Dump schema/database')
+    parser_dump.add_argument('--file', '-o', default=sys.stdout, help='Output to file')
+    parser_dump.add_argument('--overwrite', '-f', default=False, action=argparse.BooleanOptionalAction,
+                             help='overwrite existing files')
+    parser_dump.add_argument('--split', default=None,
+                             help='Split each table in a directory')
+    parser_dump.add_argument('--fmt', default="{n:04}-{t}.sql",
+                             help='Use format string for filenames. see help("FORMATTING")')
+    parser_dump.add_argument('--counter', '-c', type=int, default=1,
+                             help="Initial value of counter {n} for fmt")
+    parser_dump.add_argument('--create-database', default=False, action=argparse.BooleanOptionalAction,
+                             help='add create database')
+    parser_dump.add_argument('--create-table', default=True, action=argparse.BooleanOptionalAction,
+                             help='add create table')
+    parser_dump.add_argument('--insert', default=False, action=argparse.BooleanOptionalAction,
+                             help='add insert values')
+    parser_dump.add_argument('--may-fail', default=False, action=argparse.BooleanOptionalAction,
+                             help='surround queries by @')
+    parser_dump.add_argument("table", nargs='*')
 
-    parser_execute = subparsers.add_parser('execute',
+    parser_execute = subparsers.add_parser('execute', aliases=['exec'],
                                            help='Execute arbitrary SQL file (without recording)')
     parser_execute.add_argument("--section", action='append',
                                 help="Only execute specified sections")
@@ -478,7 +589,13 @@ if __name__ == "__main__":
 
     elif args.command == "dump":
         with connect(args) as cnx:
-            dump_schema(cnx, args.database, file=args.file, create_database=args.create_database)
+            try:
+                dump(cnx, args.database, *args.table,
+                     file=args.file, may_fail=args.may_fail, overwrite=args.overwrite,
+                     split=args.split, fmt=args.fmt, counter=args.counter,
+                     create_database=args.create_database, create_table=args.create_table, insert=args.insert)
+            except IOError as e:
+                logger.critical(str(e))
 
     elif args.command in ["status", "st"]:
         with connect(args) as cnx:
