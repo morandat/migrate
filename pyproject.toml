@@ -10,8 +10,11 @@ authors = [
 readme = "README.md"
 dynamic = ["version", "description"]
 dependencies = [
-  "pymysql"
+  "pymysql",
 ]
+
+[project.optional-dependencies]
+  pgsql = ["psycopg"]
 
 [project.urls]
 Homepage = "https://github.com/morandat/migrate"

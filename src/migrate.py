@@ -436,6 +436,16 @@ def connect(args, create_database=False):
     return cnx
 
 
+def pgsql_driver(args):
+    import psycopg
+    return psycopg.connect
+
+
+def sqlite3_driver(args):
+    import sqlite3
+    return sqlite3.connect
+
+
 def mysql_driver(args):
     import pymysql
     return pymysql.connect
@@ -487,7 +497,8 @@ class FakeConnection():
         return self.Cursor()
 
 
-DRIVERS = dict(mysql=mysql_driver, fake=FakeConnection)
+DRIVERS = dict(mysql=mysql_driver, pgsql=pgsql_driver,
+               sqlite3=sqlite3_driver, fake=FakeConnection)
 
 
 def main():

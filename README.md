@@ -14,7 +14,7 @@ migrate --directory migrations --database YOUR_DATABASE up
 # You're all set !
 ```
 
-Let's create our first real migration and rollback it
+Let's create our first real migration and roll it back
 
 ```
 migrate -D migrations create my first migration
