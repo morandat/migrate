@@ -198,7 +198,7 @@ def update_migration(cnx, oldname, name, migration, table="migrate"):
 
 def status_migrations(cnx, directory, filters=None,
                       show_missings=False, table="migrate"):
-    found = []
+    found = [""]  # Ensure at least one value to avoid parse error on NON IN
     for name, migration in load_migrations(list_directory(directory), directory,
                                            filters=(None if show_missings else filters)):
         found.append(name)
@@ -213,7 +213,7 @@ def status_migrations(cnx, directory, filters=None,
             print(status, name, ' '.join(more), sep=" ")
     if show_missings:
         with cnx.cursor() as cursor:
-            res = cursor.execute(f"SELECT name, applied, hash FROM `{table}` WHERE name not in %s",
+            res = cursor.execute(f"SELECT name, applied, hash FROM `{table}` WHERE name NOT IN %s",
                                  (found,))
             for m in cursor.fetchall():
                 print("M", *m, sep=" ")
@@ -414,21 +414,16 @@ def set_logger_level(logger, verbosity):
 
 def connect(args, create_database=False):
     if args.empty_password or args.driver == "fake":
-        password = None
+        args.password = None
     elif args.password is None:
-        password = getpass(f"{args.user}@{args.host}: ")
-    else:
-        password = args.password
+        args.password = getpass(f"{args.user}@{args.host}: ")
 
     if not args.database and args.driver != "fake":
         raise RuntimeError(args.database, "database is required %s" % args)
     logger.debug("Connecting to %s@%s db: %s (%s)",
                  args.user, args.host, args.database, args.charset)
     connect = DRIVERS.get(args.driver, mysql_driver)
-    cnx = connect(host=args.host,
-                  user=args.user,
-                  password=password,
-                  charset=args.charset)
+    cnx = connect(args)
     if create_database:
         with cnx.cursor() as cursor:
             cursor.execute(f'CREATE DATABASE IF NOT EXISTS `{args.database}`')
@@ -438,17 +433,26 @@ def connect(args, create_database=False):
 
 def pgsql_driver(args):
     import psycopg
-    return psycopg.connect
+    return psycopg.connect(host=args.host,
+                           user=args.user,
+                           password=args.password,
+                           charset=args.charset)
 
 
 def sqlite3_driver(args):
     import sqlite3
-    return sqlite3.connect
+    return sqlite3.connect(host=args.host,
+                           user=args.user,
+                           password=args.password,
+                           charset=args.charset)
 
 
 def mysql_driver(args):
     import pymysql
-    return pymysql.connect
+    return pymysql.connect(host=args.host,
+                           user=args.user,
+                           password=args.password,
+                           charset=args.charset)
 
 
 class FakeConnection():
@@ -469,7 +473,8 @@ class FakeConnection():
             return []
 
         def execute(self, query, *args):
-            logger.critical("Execute: %s", query.format(args))
+            logger.critical("Execute: %s", query)
+            logger.critical("Args: %s", args)
             return False
 
     def __enter__(self, *args):
