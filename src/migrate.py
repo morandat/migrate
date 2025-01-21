@@ -309,7 +309,7 @@ def dump_values(cnx, table, file=sys.stdout, may_fail=False, create_database=Tru
             print(("@" if may_fail else ""), f"INSERT INTO `{table}` VALUES", file=file, sep="")
             while entry := cursor.fetchone():
                 counter -= 1
-                print("(", ", ".join(escape(f) for f in entry), ")",
+                print("(", ",".join(escape(f) for f in entry), ")",
                       ("," if counter else ""),
                       file=file, sep="")
             print(';', file=file)
