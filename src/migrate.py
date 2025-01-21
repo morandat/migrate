@@ -295,7 +295,7 @@ def dump_table(cnx, table, file=sys.stdout, may_fail=False):
         res = cursor.execute(f"SHOW CREATE TABLE `{table}`")
         if res:
             logger.info("Create schema of table: %s", table)
-            name, content = cursor.fetchone()
+            name, content, *unused = cursor.fetchone()  # FIXME unused seems to contains, sometimes, charset
             print("-- Table: %s" % name, file=file)
             print("@" if may_fail else "", content, ';', file=file, sep="")
 
