@@ -4,7 +4,7 @@ Migrate, a Quick and dirty database migration tool
 """
 
 from contextlib import nullcontext, suppress
-from datetime import datetime
+from datetime import datetime, date, time
 import decimal
 import enum
 from getpass import getpass
@@ -399,6 +399,10 @@ def escape(value):
     if isinstance(value, int):
         return str(value)
     if isinstance(value, datetime):
+        return value.strftime("'%Y-%m-%d %H:%M:%S'")
+    if isinstance(value, date):
+        return value.strftime("'%Y-%m-%d'")
+    if isinstance(value, time):
         return value.strftime("'%Y-%m-%d %H:%M:%S'")
     if isinstance(value, decimal.Decimal):
         return str(value)
