@@ -300,10 +300,14 @@ def dump_table(cnx, table, file=sys.stdout, may_fail=False):
             print("@" if may_fail else "", content, ';', file=file, sep="")
 
 
-def dump_values(cnx, table, file=sys.stdout, may_fail=False, create_database=True):
+def dump_values(cnx, table, file=sys.stdout, may_fail=False, create_database=True, where=None):
     with cnx.cursor() as cursor:
-        res = cursor.execute(f"SELECT * FROM `{table}`")
+        query = f"SELECT * FROM `{table}`"
+        if where:
+            query = f"{query} WHERE {where}"
+        res = cursor.execute(query)
         if res:
+            # TODO split results in batch of 1k entry ?
             counter = cursor.rowcount
             logger.info("Insert into %s %s value%s", table, counter, "s" if counter > 1 else "")
             print(("@" if may_fail else ""), f"INSERT INTO `{table}` VALUES", file=file, sep="")
@@ -337,7 +341,8 @@ def filter_selection(selection, existings):
 
 def dump(cnx, database, *tables, file=sys.stdout, may_fail=False,
          directory=None, fmt="{n:04}-{t}.sql", counter=1, overwrite=False,
-         create_database=True, create_table=True, insert=False, add_down=False):
+         create_database=True, create_table=True, insert=False, add_down=False,
+         where={}):
 
     def _open(file, cancel=False):
         if cancel:
@@ -370,7 +375,7 @@ def dump(cnx, database, *tables, file=sys.stdout, may_fail=False,
                     if create_table:
                         dump_table(cnx, table, file=fd, may_fail=may_fail)
                     if insert:
-                        dump_values(cnx, table, file=fd, may_fail=may_fail)
+                        dump_values(cnx, table, file=fd, may_fail=may_fail, where=where.get(table))
                     if add_down:
                         print("-- migrate: down", file=fd)
                         if create_table:
@@ -565,7 +570,7 @@ def main():
                              help='overwrite existing files')
     parser_dump.add_argument('--split', default=False, action=argparse.BooleanOptionalAction,
                              help='Split each table in a directory')
-    parser_dump.add_argument('--add-down', default=False, action=argparse.BooleanOptionalAction,
+    parser_dump.add_argument('--add-down-part', default=False, action=argparse.BooleanOptionalAction,
                              help='Adds a migration down (may not work without split)')
     parser_dump.add_argument('--fmt', default="{n:04}-{t}.sql",
                              help='Use format string for filenames. see help("FORMATTING")')
@@ -577,6 +582,13 @@ def main():
                              help='add create table')
     parser_dump.add_argument('--insert', default=False, action=argparse.BooleanOptionalAction,
                              help='add insert values')
+    # hack of https://gist.github.com/vadimkantorov/37518ff88808af840884355c845049ea
+    parser_dump.add_argument('--where',
+                             action=type('', (argparse.Action, ),
+                                         dict(__call__=lambda a, p, n, v, o:
+                                              getattr(n, a.dest).update(dict([v.split('=', 1)])))),
+                             default={},
+                             help="adds where filter for some tables `foo='expression'`")
     parser_dump.add_argument('--may-fail', default=False, action=argparse.BooleanOptionalAction,
                              help='surround queries by @')
     parser_dump.add_argument("table", nargs='*')
@@ -661,7 +673,7 @@ def main():
                      file=args.file, may_fail=args.may_fail, overwrite=args.overwrite,
                      directory=(args.directory if args.split else None), fmt=args.fmt, counter=args.counter,
                      create_database=args.create_database, create_table=args.create_table, insert=args.insert,
-                     add_down=args.add_down)
+                     add_down=args.add_down_part, where=args.where)
             except IOError as e:
                 logger.critical(str(e))
 
