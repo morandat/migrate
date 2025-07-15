@@ -88,7 +88,7 @@ def read_migration(path, directory="."):
     migration = {}
     current = []
     key = "prolog"
-    with open(os.path.join(directory, path)) as file:
+    with (sys.stdin if path == "-" else open(os.path.join(directory, path))) as file:
         for line in file:
             if c := COMMENTS.match(line):
                 if k := MIGRATE_KEY.match(c[1]):
@@ -364,7 +364,7 @@ def dump(cnx, database, *tables, file=sys.stdout, may_fail=False,
             dump_database(cnx, database, file=file, may_fail=may_fail)
             if add_down:
                 print("-- migrate: down", file=file)
-                print(f"@DROP DATABASE `{database};`", file=fd)
+                print(f"@DROP DATABASE `{database};`", file=file)
 
         with cnx.cursor() as cursor:
             res = cursor.execute("SHOW TABLES")
