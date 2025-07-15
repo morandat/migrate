@@ -595,8 +595,12 @@ def main():
 
     parser_execute = subparsers.add_parser('execute', aliases=['exec'],
                                            help='Execute arbitrary SQL file (without recording)')
+    parser_execute.add_argument('--disable-constraints', default=False, action=argparse.BooleanOptionalAction,
+                                help='disable constraints during execution')
     parser_execute.add_argument("--section", action='append',
                                 help="Only execute specified sections")
+    parser_execute.add_argument('--create-database', default=False, action=argparse.BooleanOptionalAction,
+                                help='create database before any pending migrations')
     parser_execute.add_argument("files", nargs='+')
 
     parser_show = subparsers.add_parser('show', help='Show migrations')
@@ -698,13 +702,15 @@ def main():
     elif args.command in ["execute", "exec"]:
         if args.dry_run:
             args.driver = "fake"
-        with connect(args) as cnx:
+        with connect(args, create_database=args.create_database) as cnx:
             for file in args.files:
                 migration = read_migration(file, "")
                 template = read_migration(args.template) if args.template else {}
                 cnx.begin()
                 with cnx.cursor() as cursor:
                     try:
+                        if args.disable_constraints:
+                            cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
                         for section in filter_selection(args.section,
                                                         set(itertools.chain(migration.keys(), template.keys()))):
                             for query in itertools.chain(template.get(section, []),
@@ -712,6 +718,8 @@ def main():
                                 logger.debug("Execute: %s", query)
                                 res = cursor.execute(query)
                                 logger.debug("Result: %s", res)
+                        if args.disable_constraints:
+                            cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
                         cnx.commit()
                     except Exception as e:
                         logger.error("Execution %s failed: %s", file, e)
