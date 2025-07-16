@@ -300,31 +300,33 @@ def dump_table(cnx, table, file=sys.stdout, may_fail=False):
             print("@" if may_fail else "", content, ';', file=file, sep="")
 
 
-def dump_values(cnx, table, file=sys.stdout, may_fail=False, create_database=True, where=None, block_size=5000):
+def dump_values(cnx, table, file=sys.stdout, may_fail=False, create_database=True, where=None, block_size=5000, soft_limit=100000):
     with cnx.cursor() as cursor:
         query = f"SELECT * FROM `{table}`"
         if where:
             query = f"{query} WHERE {where}"
         res = cursor.execute(query)
         if res:
-            # TODO split results in batch of 1k entry ?
             total = cursor.rowcount
             logger.info("Insert into %s %s value%s", table, total, "s" if total > 1 else "")
             counter = block_size if block_size and total // block_size else total
-            total -= counter
             while counter > 0:
+                insert_len = 0
                 print(("@" if may_fail else ""), f"INSERT INTO `{table}` VALUES", file=file, sep="")
                 while counter:
                     entry = cursor.fetchone()
                     counter -= 1
+                    total -= 1
                     line = ",".join(escape(f) for f in entry)
-                    logger.debug("Line is ", len(line))
+                    insert_len += len(line) + 3
+                    if insert_len > soft_limit:
+                        logger.warning("Soft limit reached: %s", insert_len)
+                        counter = 0
                     print("(", line, ")",
                           ("," if counter else ""),
                           file=file, sep="")
                 print(';', file=file)
                 counter = block_size if block_size and total // block_size else total
-                total -= counter
 
 
 def filter_selection(selection, existings):
@@ -717,21 +719,21 @@ def main():
             for file in args.files:
                 migration = read_migration(file, "")
                 template = read_migration(args.template) if args.template else {}
-                # cnx.begin()
+                cnx.begin()
                 with cnx.cursor() as cursor:
                     try:
                         for section in filter_selection(args.section,
                                                         set(itertools.chain(migration.keys(), template.keys()))):
                             for query in itertools.chain(template.get(section, []),
                                                          migration.get(section, [])):
-                                logger.debug("Execute: %s", query[0:1000])
+                                logger.debug("Execute: %s", query[0:2000])
                                 res = cursor.execute(query)
                                 logger.debug("Result: %s", res)
                         cnx.commit()
                     except Exception as e:
                         logger.error("Execution %s failed: %s", file, e)
                         logger.exception(e)
-                        # cnx.rollback()
+                        cnx.rollback()
                         raise
             if args.disable_constraints:
                 with cnx.cursor() as cursor:
