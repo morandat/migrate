@@ -533,18 +533,18 @@ def main():
     parser.add_argument('--verbose', '-v', action='count', default=0)
     parser.add_argument('--driver', default=os.environ.get("MIGRATE_DRIVER", "mysql"), choices = DRIVERS.keys(),
                         help='database connector ($MIGRATE_DRIVER)')
-    parser.add_argument('--host', '-H', default=os.environ.get("MYSQL_HOST", "database"),
-                        help='database host ($MYSQL_HOST)')
-    parser.add_argument('--database', '-d', default=os.environ.get("MYSQL_DATABASE"),
-                        help='database name ($MYSQL_DATABASE)')
+    parser.add_argument('--host', '-H', default=os.environ.get("DB_HOST", "database"),
+                        help='database host ($DB_HOST)')
+    parser.add_argument('--database', '-d', default=os.environ.get("DB_DATABASE"),
+                        help='database name ($DB_DATABASE)')
     parser.add_argument('--table', '-t', default=os.environ.get("MIGRATE_TABLE", "migrate"),
                         help='table name')
     parser.add_argument('--template', help='template migration')
-    parser.add_argument('--user', '-u', default=os.environ.get("MYSQL_USER", "root"),
-                        help='database user name (MYSQL_USER)')
-    parser.add_argument('--password', '-p', default=os.environ.get("MYSQL_PASSWORD", None),
+    parser.add_argument('--user', '-u', default=os.environ.get("DB_USER", "root"),
+                        help='database user name ($DB_USER)')
+    parser.add_argument('--password', '-p', default=os.environ.get("DB_PASSWORD", None),
                         # FIXME this show the password in env when help is showned
-                        help='database user password ($MYSQL_PASSWORD)')
+                        help='database user password ($DB_PASSWORD)')
     parser.add_argument('--empty-password',
                         help='if database user has no password')
     parser.add_argument('--charset', '-c', help='utf8mb4')
